@@ -33,6 +33,36 @@ class variant;
 struct monostate {
 };
 
+inline constexpr bool operator==(monostate, monostate) noexcept
+{
+  return true;
+}
+
+inline constexpr bool operator!=(monostate, monostate) noexcept
+{
+  return false;
+}
+
+inline constexpr bool operator<(monostate, monostate) noexcept
+{
+  return false;
+}
+
+inline constexpr bool operator>(monostate, monostate) noexcept
+{
+  return false;
+}
+
+inline constexpr bool operator<=(monostate, monostate) noexcept
+{
+  return true;
+}
+
+inline constexpr bool operator>=(monostate, monostate) noexcept
+{
+  return true;
+}
+
 class bad_variant_access : public std::exception
 {
 public:
@@ -47,7 +77,7 @@ private:
   char const* what_;
 };
 
-#define SV_BAD_ACCESS(what) throw ::simple::bad_variant_access(what)
+#define SVAR_BAD_ACCESS(what) throw ::simple::bad_variant_access(what)
 
 template <typename T>
 struct variant_size;
@@ -164,16 +194,14 @@ union variant_storage_impl<true, T, Ts...> {
   // ~variant_storage_impl() = default;
 
   template <std::size_t I, typename... Args>
-  constexpr auto& emplace(mp::m_size_t<I>, Args&&... args)
+  constexpr auto& emplace(mp::m_size_t<I> index, Args&&... args)
   {
-    return rest_.emplace(mp::m_size_t<I - 1>{}, std::forward<Args>(args)...);
-  }
-
-  template <typename... Args>
-  constexpr T& emplace(mp::m_size_t<0>, Args&&... args)
-  {
-    new (&first_) T(std::forward<Args>(args)...);
-    return first_;
+    return emplace_impl(
+        mp::m_all<
+            std::is_trivially_move_assignable<T>,
+            std::is_trivially_move_assignable<Ts>...>{},
+        index,
+        std::forward<Args>(args)...);
   }
 
   template <std::size_t I>
@@ -200,7 +228,35 @@ union variant_storage_impl<true, T, Ts...> {
 
   constexpr T&& get(mp::m_size_t<0>) && noexcept { return std::move(first_); }
 
+  template <std::size_t I>
+  constexpr auto const&& get(mp::m_size_t<I>) const&& noexcept
+  {
+    return std::move(rest_).get(mp::m_size_t<I - 1>{});
+  }
+
+  constexpr T const&& get(mp::m_size_t<0>) const&& noexcept { return std::move(first_); }
+
 private:
+
+  template <std::size_t I, typename... Args>
+  constexpr auto& emplace_impl(mp::m_false, mp::m_size_t<I>, Args&&... args)
+  {
+    return rest_.emplace(mp::m_size_t<I - 1>{}, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args>
+  constexpr T& emplace_impl(mp::m_false, mp::m_size_t<0>, Args&&... args)
+  {
+    new (&first_) T(std::forward<Args>(args)...);
+    return first_;
+  }
+
+  template <std::size_t I, typename... Args>
+  constexpr auto& emplace_impl(mp::m_true, mp::m_size_t<I> index, Args&&... args)
+  {
+    *this = variant_storage_impl{index, std::forward<Args>(args)...};
+    return get(index);
+  }
 
   T                      first_;
   variant_storage<Ts...> rest_;
@@ -263,6 +319,14 @@ public:
 
   T&& get(mp::m_size_t<0>) && noexcept { return std::move(first_); }
 
+  template <std::size_t I>
+  auto const&& get(mp::m_size_t<I>) const&& noexcept
+  {
+    return std::move(rest_).get(mp::m_size_t<I - 1>{});
+  }
+
+  T const&& get(mp::m_size_t<0>) const&& noexcept { return std::move(first_); }
+
 private:
 
   T                      first_;
@@ -276,35 +340,101 @@ template <bool, typename... Ts>
 class variant_base_impl;
 
 template <typename... Ts>
-using variant_base = variant_base_impl<
-    mp::m_all<std::is_trivially_destructible<Ts>...>::value,
-    dummy_type,
-    Ts...>;
+using variant_base =
+    variant_base_impl<mp::m_all<std::is_trivially_destructible<Ts>...>::value, Ts...>;
 
 template <typename... Ts>
 class variant_base_impl<true, Ts...>
 {
 
-  using storage_type = variant_storage<Ts...>;
+  using storage_type = variant_storage<dummy_type, Ts...>;
 
 public:
 
-  constexpr variant_base_impl(mp::m_size_t<0> index)
-    : index_{variant_npos}, storage_{index}
-  {
-  }
+  constexpr variant_base_impl() : index_{variant_npos}, storage_{mp::m_size_t<0>{}} {}
 
   template <std::size_t I, typename... Args>
-  constexpr variant_base_impl(mp::m_size_t<I> index, Args&&... args)
-    : index_{I}, storage_{index, std::forward<Args>(args)...}
+  constexpr variant_base_impl(mp::m_size_t<I>, Args&&... args)
+    : index_{I + 1}, storage_{mp::m_size_t<I + 1>{}, std::forward<Args>(args)...}
   {
   }
 
   ~variant_base_impl() = default;
 
+  constexpr std::size_t index() const noexcept { return this->index_ - 1; }
+
+  constexpr bool valueless_by_exception() const noexcept
+  {
+    return index_ == variant_npos;
+  }
+
+  template <
+      std::size_t I,
+      typename... Args,
+      typename T = variant_alternative<I, variant<Ts...>>>
+  constexpr auto&
+  emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
+  {
+    return emplace_impl<I + 1>(
+        std::is_nothrow_constructible<T, Args...>{}, std::forward<Args>(args)...);
+  }
+
 protected:
 
+  template <std::size_t I, typename... Args>
+  constexpr auto& emplace_impl(mp::m_true, Args&&... args)
+  {
+    index_ = I;
+    return storage_.emplace(mp::m_size_t<I>{}, std::forward<Args>(args)...);
+  }
+
+  template <std::size_t I, typename... Args>
+  constexpr auto& emplace_impl(mp::m_false, Args&&... args)
+  {
+    index_ = variant_npos;
+    auto& value = storage_.emplace(mp::m_size_t<I>{}, std::forward<Args>(args)...);
+    index_ = I;
+    return value;
+  }
+
   constexpr void destroy() noexcept { index_ = variant_npos; }
+
+  template <std::size_t I, typename... Args>
+  constexpr void init(mp::m_size_t<I>, Args&&... args)
+  {
+    new (&storage_) storage_type{mp::m_size_t<I + 1>{}, std::forward<Args>(args)...};
+    index_ = I + 1;
+  }
+
+  template <std::size_t I>
+  constexpr auto& get(mp::m_size_t<I>) & noexcept
+  {
+    // assert(I + 1 == index_);
+    return storage_.get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  constexpr auto const& get(mp::m_size_t<I>) const& noexcept
+  {
+    // assert(I + 1 == index_);
+    return storage_.get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  constexpr auto&& get(mp::m_size_t<I>) && noexcept
+  {
+    // assert(I + 1 == index_);
+    return std::move(storage_).get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  constexpr auto const&& get(mp::m_size_t<I>) const&& noexcept
+  {
+    // assert(I + 1 == index_);
+    return std::move(storage_).get(mp::m_size_t<I + 1>{});
+  }
+
+private:
 
   std::size_t  index_;
   storage_type storage_;
@@ -314,15 +444,15 @@ template <typename... Ts>
 class variant_base_impl<false, Ts...>
 {
 
-  using storage_type = variant_storage<Ts...>;
+  using storage_type = variant_storage<dummy_type, Ts...>;
 
 public:
 
-  variant_base_impl(mp::m_size_t<0> index) : index_{variant_npos}, storage_{index} {}
+  variant_base_impl() : index_{variant_npos}, storage_{mp::m_size_t<0>{}} {}
 
   template <std::size_t I, typename... Args>
-  variant_base_impl(mp::m_size_t<I> index, Args&&... args)
-    : index_{I}, storage_{index, std::forward<Args>(args)...}
+  variant_base_impl(mp::m_size_t<I>, Args&&... args)
+    : index_{I + 1}, storage_{mp::m_size_t<I + 1>{}, std::forward<Args>(args)...}
   {
   }
 
@@ -332,22 +462,76 @@ public:
       destroy();
   }
 
+  std::size_t index() const noexcept { return index_ - 1; }
+
+  bool valueless_by_exception() const noexcept { return index_ == variant_npos; }
+
+  template <
+      std::size_t I,
+      typename... Args,
+      typename T = variant_alternative<I, variant<Ts...>>>
+  auto& emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
+  {
+    if (index_ != variant_npos)
+      destroy();
+    auto& value = storage_.emplace(mp::m_size_t<I + 1>{}, std::forward<Args>(args)...);
+    index_ = I + 1;
+    return value;
+  }
+
 protected:
 
   struct destroy_fn {
     template <typename I, typename Variant>
-    void operator()(I, Variant* this_) const
+    void operator()(I index, Variant* this_) const
     {
-      using index_type = mp::m_at<mp::m_list<Ts...>, I>;
-      this_->storage_.get(I{}).~index_type();
+      using type = variant_alternative_t<I::value, variant<dummy_type, Ts...>>;
+      this_->storage_.get(index).~type();
     }
   };
 
   void destroy() noexcept
   {
-    mp::m_vtable_invoke<sizeof...(Ts)>(index_, destroy_fn{}, this);
+    mp::m_invoke_with_index<sizeof...(Ts) + 1>(index_, destroy_fn{}, this);
     index_ = variant_npos;
   }
+
+  template <std::size_t I, typename... Args>
+  void init(mp::m_size_t<I>, Args&&... args)
+  {
+    new (&storage_) storage_type{mp::m_size_t<I + 1>{}, std::forward<Args>(args)...};
+    index_ = I + 1;
+  }
+
+  template <std::size_t I>
+  auto& get(mp::m_size_t<I>) & noexcept
+  {
+    // assert(I + 1 == index_);
+    return storage_.get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  auto const& get(mp::m_size_t<I>) const& noexcept
+  {
+    // assert(I + 1 == index_);
+    return storage_.get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  auto&& get(mp::m_size_t<I>) && noexcept
+  {
+    // assert(I + 1 == index_);
+    return std::move(storage_).get(mp::m_size_t<I + 1>{});
+  }
+
+  template <std::size_t I>
+  auto const&& get(mp::m_size_t<I>) const&& noexcept
+  {
+    // assert(I + 1 == index_);
+    return std::move(storage_).get(mp::m_size_t<I + 1>{});
+  }
+
+private:
 
   std::size_t  index_;
   storage_type storage_;
@@ -402,7 +586,7 @@ private:
     constexpr void
     operator()(I, variant_cc_base_impl& this_, variant_cc_base_impl const& other) const
     {
-      this_.storage_.emplace(I{}, other.storage_.get(I{}));
+      this_.init(I{}, other.get(I{}));
     }
   };
 
@@ -412,12 +596,10 @@ public:
 
   constexpr variant_cc_base_impl(variant_cc_base_impl const& other) noexcept(
       mp::m_all<std::is_nothrow_copy_constructible<Ts>...>::value)
-    : variant_base<Ts...>{mp::m_size_t<0>{}}
+    : variant_base<Ts...>{}
   {
-    if (other.index_ != variant_npos) {
-      mp::m_vtable_invoke<sizeof...(Ts) + 1>(other.index_, copy_fn{}, *this, other);
-      this->index_ = other.index_;
-    }
+    if (!other.valueless_by_exception())
+      mp::m_invoke_with_index<sizeof...(Ts)>(other.index(), copy_fn{}, *this, other);
   }
 
   variant_cc_base_impl& operator=(variant_cc_base_impl const&) = default;
@@ -480,7 +662,7 @@ class variant_ca_base_impl<true, false, Ts...> : public variant_cc_base<Ts...>
     constexpr void
     operator()(I, variant_ca_base_impl& this_, variant_ca_base_impl const& other) const
     {
-      this_.storage_.get(I{}) = other.storage_.get(I{});
+      this_.get(I{}) = other.get(I{});
     }
   };
 
@@ -489,23 +671,21 @@ class variant_ca_base_impl<true, false, Ts...> : public variant_cc_base<Ts...>
     constexpr void
     operator()(I, variant_ca_base_impl& this_, variant_ca_base_impl const& other) const
     {
-      this_.storage_.emplace(I{}, other.storage_.get(I{}));
+      this_.template emplace<I::value>(other.get(I{}));
     }
   };
 
   template <typename = void>
   constexpr static void
-  emplace(mp::m_true, variant_ca_base_impl& this_, variant_ca_base_impl const& other)
+  do_emplace(mp::m_true, variant_ca_base_impl& this_, variant_ca_base_impl const& other)
   {
-    if (this_.index_ != variant_npos)
-      this_.destroy();
-    mp::m_vtable_invoke<sizeof...(Ts) + 1>(other.index_, copy_emplace_fn{}, this_, other);
-    this_.index_ = other.index_;
+    mp::m_invoke_with_index<sizeof...(Ts)>(
+        other.index(), copy_emplace_fn{}, this_, other);
   }
 
   template <typename = void>
   constexpr static void
-  emplace(mp::m_false, variant_ca_base_impl& this_, variant_ca_base_impl const& other)
+  do_emplace(mp::m_false, variant_ca_base_impl& this_, variant_ca_base_impl const& other)
   {
     static_cast<variant<Ts...>&>(this_) =
         variant<Ts...>{static_cast<variant<Ts...> const&>(other)};
@@ -523,16 +703,16 @@ public:
           std::is_nothrow_copy_assignable<Ts>>...>::value)
   {
     if (this != &other) {
-      if (this->index_ == other.index_) {
-        if (this->index_ != variant_npos) {
-          mp::m_vtable_invoke<sizeof...(Ts) + 1>(
-              this->index_, copy_assign_fn{}, *this, other);
+      if (this->index() == other.index()) {
+        if (!this->valueless_by_exception()) {
+          mp::m_invoke_with_index<sizeof...(Ts)>(
+              this->index(), copy_assign_fn{}, *this, other);
         }
       } else {
-        if (other.index_ == variant_npos) {
+        if (other.valueless_by_exception()) {
           this->destroy();
         } else {
-          emplace(is_valid_emplace{}, *this, other);
+          do_emplace(is_valid_emplace{}, *this, other);
         }
       }
     }
@@ -592,7 +772,7 @@ private:
     constexpr void
     operator()(I, variant_mc_base_impl& this_, variant_mc_base_impl&& other) const
     {
-      this_.storage_.emplace(I{}, std::move(other.storage_).get(I{}));
+      this_.init(I{}, std::move(other).get(I{}));
     }
   };
 
@@ -605,13 +785,11 @@ public:
 
   constexpr variant_mc_base_impl(variant_mc_base_impl&& other) noexcept(
       mp::m_all<std::is_nothrow_move_constructible<Ts>...>::value)
-    : variant_ca_base<Ts...>{mp::m_size_t<0>{}}
+    : variant_ca_base<Ts...>{}
   {
-    if (other.index_ != variant_npos) {
-      mp::m_vtable_invoke<sizeof...(Ts) + 1>(
-          other.index_, move_fn{}, *this, std::move(other));
-      this->index_ = other.index_;
-    }
+    if (!other.valueless_by_exception())
+      mp::m_invoke_with_index<sizeof...(Ts)>(
+          other.index(), move_fn{}, *this, std::move(other));
   }
   variant_mc_base_impl& operator=(variant_mc_base_impl&&) = default;
 };
@@ -670,7 +848,7 @@ public:
     constexpr void
     operator()(I, variant_ma_base_impl& this_, variant_ma_base_impl&& other) const
     {
-      this_.storage_.get(I{}) = std::move(other.storage_).get(I{});
+      this_.get(I{}) = std::move(other).get(I{});
     }
   };
 
@@ -679,7 +857,7 @@ public:
     constexpr void
     operator()(I, variant_ma_base_impl& this_, variant_ma_base_impl&& other) const
     {
-      this_.storage_.emplace(I{}, std::move(other.storage_).get(I{}));
+      this_.template emplace<I::value>(std::move(other).get(I{}));
     }
   };
 
@@ -698,20 +876,17 @@ public:
           std::is_nothrow_move_assignable<Ts>>...>::value)
   {
     if (this != &other) {
-      if (this->index_ == other.index_) {
-        if (this->index_ != variant_npos) {
-          mp::m_vtable_invoke<sizeof...(Ts) + 1>(
-              this->index_, move_assign_fn{}, *this, std::move(other));
+      if (this->index() == other.index()) {
+        if (!this->valueless_by_exception()) {
+          mp::m_invoke_with_index<sizeof...(Ts)>(
+              this->index(), move_assign_fn{}, *this, std::move(other));
         }
       } else {
-        if (other.index_ == variant_npos) {
+        if (other.valueless_by_exception()) {
           this->destroy();
         } else {
-          if (this->index_ != variant_npos)
-            this->destroy();
-          mp::m_vtable_invoke<sizeof...(Ts) + 1>(
-              other.index_, move_emplace_fn{}, *this, std::move(other));
-          this->index_ = other.index_;
+          mp::m_invoke_with_index<sizeof...(Ts)>(
+              other.index(), move_emplace_fn{}, *this, std::move(other));
         }
       }
     }
@@ -719,11 +894,206 @@ public:
   }
 };
 
+struct variant_friend {
+  template <typename Variant, typename I>
+  static constexpr decltype(auto) get(Variant&& variant, I)
+  {
+    return std::forward<Variant>(variant).get(I{});
+  }
+};
+
+#define SVAR_GET_INDEX(variant, index)                                                   \
+  ::simple::variant_ns::variant_friend::get(variant, mp::m_size_t<index>{})
+
+template <typename Function, typename Indexes, typename All, typename... Variants>
+struct build_visitor_index_list_t;
+
+template <
+    typename Function,
+    typename... Is,
+    typename... AllVars,
+    typename Variant,
+    typename... Variants>
+struct build_visitor_index_list_t<
+    Function,
+    mp::m_list<Is...>,
+    mp::m_list<AllVars...>,
+    Variant,
+    Variants...> {
+
+  template <typename I>
+  constexpr auto operator()(
+      I,
+      Function&&     fn,
+      Variant const& variant,
+      Variants const&... variants,
+      AllVars&&... all_vars) const
+  {
+    return variant.valueless_by_exception()
+               ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
+               : mp::m_invoke_with_index<mp::m_size<Variant>::value>(
+                     variant.index(),
+                     build_visitor_index_list_t<
+                         Function,
+                         mp::m_list<Is..., I>,
+                         mp::m_list<AllVars...>,
+                         Variants...>{},
+                     std::forward<Function>(fn),
+                     variants...,
+                     std::forward<AllVars>(all_vars)...);
+  }
+};
+
+template <typename Function, typename IL, typename... AllVars>
+struct build_visitor_index_list_t<Function, IL, mp::m_list<AllVars...>> {
+
+  template <typename... Is, typename Fn, typename... Variants>
+  static constexpr decltype(auto) call(mp::m_list<Is...>, Fn&& fn, Variants&&... vars)
+  {
+    return std::forward<Fn>(fn)(
+        SVAR_GET_INDEX(std::forward<Variants>(vars), Is::value)...);
+  }
+
+  template <typename I>
+  constexpr auto operator()(I, Function fn, AllVars... vars) const
+  {
+    return call(
+        mp::m_push_back<IL, I>{},
+        std::forward<Function>(fn),
+        std::forward<AllVars>(vars)...);
+  }
+};
+
+struct index_visitor {
+
+  template <typename I, typename Function, typename Variant>
+  constexpr decltype(auto) operator()(I, Function&& fn, Variant&& var) const
+  {
+    return std::forward<Function>(fn)(
+        SVAR_GET_INDEX(std::forward<Variant>(var), I::value));
+  }
+};
+
 }  // namespace variant_ns
+
+template <typename Visitor, typename Variant, typename Variant2, typename... Variants>
+inline constexpr decltype(auto)
+visit(Visitor&& function, Variant&& variant, Variant2&& variant2, Variants&&... variants)
+{
+  using variant_ns::build_visitor_index_list_t;
+  return variant.valueless_by_exception()
+             ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
+             : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+                   variant.index(),
+                   build_visitor_index_list_t<
+                       Visitor&&,
+                       mp::m_list<>,
+                       mp::m_list<Variant&&, Variant2&&, Variants&&...>,
+                       mp::m_remove_cvref<Variant2>,
+                       mp::m_remove_cvref<Variants>...>{},
+                   std::forward<Visitor>(function),
+                   variant2,
+                   variants...,
+                   std::forward<Variant>(variant),
+                   std::forward<Variant2>(variant2),
+                   std::forward<Variants>(variants)...);
+}
+
+template <typename Visitor, typename Variant>
+inline constexpr decltype(auto) visit(Visitor&& function, Variant&& variant)
+{
+  return variant.valueless_by_exception()
+             ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
+             : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+                   variant.index(),
+                   variant_ns::index_visitor{},
+                   std::forward<Visitor>(function),
+                   std::forward<Variant>(variant));
+}
+
+#define SVAR_BAD_INDEX() SVAR_BAD_ACCESS("bad_variant_access: index not active")
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>>& get(variant<Ts...>& v)
+{
+  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>>&& get(variant<Ts...>&& v)
+{
+  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>> const&
+get(variant<Ts...> const& v)
+{
+  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>> const&&
+get(variant<Ts...> const&& v)
+{
+  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_INDEX();
+}
+
+#define SVAR_BAD_TYPE() SVAR_BAD_ACCESS("bad_variant_access: type T not active")
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T& get(variant<Ts...>& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T&& get(variant<Ts...>&& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T const& get(variant<Ts...> const& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T const&& get(variant<Ts...> const&& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_TYPE();
+}
 
 template <typename... Ts>
 class variant : public variant_ns::variant_ma_base<Ts...>
 {
+
+  friend struct variant_ns::variant_friend;
 
   using base_type = variant_ns::variant_ma_base<Ts...>;
 
@@ -735,7 +1105,7 @@ class variant : public variant_ns::variant_ma_base<Ts...>
 public:
 
   constexpr variant() noexcept(std::is_nothrow_default_constructible<type_at<0>>::value)
-    : base_type{mp::m_size_t<1>{}}
+    : base_type{mp::m_size_t<0>{}}
   {
   }
 
@@ -745,7 +1115,7 @@ public:
       typename = mp::m_if_c<(sizeof...(Ts) > I), void>>
   constexpr explicit variant(in_place_index_t<I>, Args&&... args) noexcept(
       std::is_nothrow_constructible<type_at<I>, Args...>::value)
-    : base_type{mp::m_size_t<I + 1>{}, std::forward<Args>(args)...}
+    : base_type{mp::m_size_t<I>{}, std::forward<Args>(args)...}
   {
   }
 
@@ -759,14 +1129,16 @@ public:
 
   variant& operator=(variant&&) = default;
 
-  constexpr std::size_t index() const noexcept { return this->index_ - 1; }
+  using base_type::index;
 
-  constexpr bool valueless_by_exception() const noexcept
-  {
-    return this->index_ == variant_npos;
-  }
+  using base_type::valueless_by_exception;
 };
 
 }  // namespace simple
+
+#undef SVAR_GET_INDEX
+#undef SVAR_BAD_ACCESS
+#undef SVAR_BAD_INDEX
+#undef SVAR_BAD_TYPE
 
 #endif  // SIMPLE_VARIANT_HPP

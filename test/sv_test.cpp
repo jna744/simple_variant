@@ -15,8 +15,8 @@ struct S {
     return *this;
   }
 
-  S(S &&) noexcept { std::cout << "S moved!" << std::endl; };
-  S& operator=(S &&)
+  S(S&&) noexcept { std::cout << "S moved!" << std::endl; };
+  S& operator=(S&&)
   {
     std::cout << "S move assigned!" << std::endl;
     return *this;
@@ -32,20 +32,16 @@ int main()
 
   using namespace simple;
 
-  variant<S, S> var{in_place_index<1>};
+  variant<S, S>                    var{in_place_index<1>};
+  constexpr variant<int, int, int> var2{in_place_index<0>, 100};
 
-  constexpr variant<int, unsigned char> var10{in_place_index<0>, 100};
+  get<1>(var).s1 = "Hello";
 
-  auto varcasdasd = var10;
-  auto trold = varcasdasd;
-  varcasdasd = std::move(trold);
-
-  auto var2{var};
-
-  var2 = var;
-
-  var = std::move(var2);
-
-
-  std::cout << var.index() << std::endl;
+  auto value = visit(
+      [](int const&& i)
+      {
+        int x = static_cast<int>(50 + i);
+        return x;
+      },
+      std::move(var2));
 }
