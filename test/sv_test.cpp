@@ -56,6 +56,6 @@ int main()
   //
   //
   std::cout << y.index() << std::endl;
-  y = "Hello";
+  y = true;
   std::cout << y.index() << std::endl;
 }

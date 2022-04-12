@@ -379,10 +379,12 @@ public:
   template <
       std::size_t I,
       typename... Args,
-      typename T = variant_alternative<I, variant<Ts...>>>
-  constexpr auto&
+      typename T = variant_alternative_t<I, variant<Ts...>>,
+      typename = mp::m_if<std::is_constructible<T, Args...>, void>>
+  constexpr T&
   emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
   {
+    static_assert(I < sizeof...(Ts), "");
     return emplace_impl<I + 1>(
         std::is_nothrow_constructible<T, Args...>{}, std::forward<Args>(args)...);
   }
@@ -477,9 +479,11 @@ public:
   template <
       std::size_t I,
       typename... Args,
-      typename T = variant_alternative<I, variant<Ts...>>>
-  auto& emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
+      typename T = variant_alternative_t<I, variant<Ts...>>,
+      typename = mp::m_if<std::is_constructible<T, Args...>, void>>
+  T& emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
   {
+    static_assert(I < sizeof...(Ts), "");
     if (index_ != variant_npos)
       destroy();
     auto& value = storage_.emplace(mp::m_size_t<I + 1>{}, std::forward<Args>(args)...);
@@ -1097,19 +1101,61 @@ public:
 
   using base_type::valueless_by_exception;
 
+  template <
+      typename T,
+      typename... Args,
+      typename =
+          mp::m_if<mp::m_all<is_unique<T>, std::is_constructible<T, Args...>>, void>>
+  constexpr T&
+  emplace(Args&&... args) noexcept(std::is_nothrow_constructible<T, Args...>{})
+  {
+    return this->template emplace<index_of<T>::value>(std::forward<Args>(args)...);
+  }
+
+  template <
+      typename T,
+      typename U,
+      typename... Args,
+      typename = mp::m_if<
+          mp::m_all<
+              is_unique<T>,
+              std::is_constructible<T, std::initializer_list<U>&, Args...>>,
+          void>>
+  constexpr T& emplace(std::initializer_list<U> il, Args&&... args) noexcept(
+      std::is_nothrow_constructible<T, Args...>{})
+  {
+    return this->template emplace<index_of<T>::value>(il, std::forward<Args>(args)...);
+  }
+
+  // template<std::size_t, typename ... Args>
+  using base_type::emplace;
+
+  template <
+      std::size_t I,
+      typename U,
+      typename... Args,
+      typename T = type_at<I>,
+      typename =
+          mp::m_if<std::is_constructible<T, std::initializer_list<U>&, Args...>, void>>
+  constexpr T& emplace(std::initializer_list<U> il, Args&&... args) noexcept(
+      std::is_nothrow_constructible<T, std::initializer_list<U>&, Args...>{})
+  {
+    return base_type::template emplace<I>(il, std::forward<Args>(args)...);
+  }
+
 private:
 
   template <typename I, typename V>
   constexpr void convert_assign(mp::m_true, I, V&& v)
   {
-    this->template emplace<I::value>(std::forward<V>(v));
+    base_type::template emplace<I::value>(std::forward<V>(v));
   }
 
   template <typename I, typename V>
   constexpr void convert_assign(mp::m_false, I, V&& v)
   {
     using T = type_at<I::value>;
-    this->template emplace<I::value>(T(std::forward<V>(v)));
+    base_type::template emplace<I::value>(T(std::forward<V>(v)));
   }
 };
 
