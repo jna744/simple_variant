@@ -43,8 +43,14 @@ int main()
   variant<S, S>                    var{in_place_index<1>};
   constexpr variant<int, int, int> var2{in_place_index<0>, 100};
 
-  constexpr auto value2 = visit(L1{}, var2);
-  std::cout << value2 << std::endl;
+  auto* s = get_if<0>(&var);
+
+  if (!s) {
+    std::cout << "Not active!" << std::endl;
+  }
+
+  visit<void>(L1{}, var2);
+
   get<1>(var).s1 = "Hello";
 
   auto value = visit(

@@ -896,14 +896,17 @@ public:
 
 struct variant_friend {
   template <typename Variant, typename I>
-  static constexpr decltype(auto) get(Variant&& variant, I)
+  static constexpr decltype(auto) get(I, Variant&& variant)
   {
     return std::forward<Variant>(variant).get(I{});
   }
 };
 
-#define SVAR_GET_INDEX(variant, index)                                                   \
-  ::simple::variant_ns::variant_friend::get(variant, mp::m_size_t<index>{})
+template <std::size_t I, typename Variant>
+inline constexpr decltype(auto) unsafe_get(mp::m_size_t<I> index, Variant&& variant)
+{
+  return variant_friend::get(index, std::forward<Variant>(variant));
+}
 
 template <typename Fn, typename Arg>
 struct bind_front_arg {
@@ -939,121 +942,32 @@ struct visit_impl {
   {
     auto const bound = bind_front(
         std::forward<Function>(function),
-        SVAR_GET_INDEX(std::forward<Variant>(variant), I::value));
-    return mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
-        variant2.index(),
-        visit_impl{},
-        bound,
-        std::forward<Variant2>(variant2),
-        std::forward<Variants>(variants)...);
+        unsafe_get(I{}, std::forward<Variant>(variant)));
+    return variant2.valueless_by_exception()
+               ? SVAR_BAD_ACCESS("bad_variant_access: invalid variant in visit")
+               : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+                     variant2.index(),
+                     visit_impl{},
+                     bound,
+                     std::forward<Variant2>(variant2),
+                     std::forward<Variants>(variants)...);
   }
 
   template <typename I, typename Function, typename Variant>
   constexpr decltype(auto) operator()(I, Function&& function, Variant&& variant) const
   {
     return std::forward<Function>(function)(
-        SVAR_GET_INDEX(std::forward<Variant>(variant), I::value));
+        unsafe_get(I{}, std::forward<Variant>(variant)));
   }
 };
 
+struct deduced_visit {
+};
+
+template <typename T>
+using require_deduced_visit = mp::m_if<mp::m_same<T, deduced_visit>, void>;
+
 }  // namespace variant_ns
-
-template <typename Visitor>
-inline constexpr decltype(auto)
-visit(Visitor&& visitor)
-{
-  return std::forward<Visitor>(visitor);
-}
-
-template <typename Visitor, typename Variant, typename... Variants>
-inline constexpr decltype(auto)
-visit(Visitor&& visitor, Variant&& variant, Variants&&... variants)
-{
-  return mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
-      variant.index(),
-      variant_ns::visit_impl{},
-      std::forward<Visitor>(visitor),
-      std::forward<Variant>(variant),
-      std::forward<Variants>(variants)...);
-}
-
-#define SVAR_BAD_INDEX() SVAR_BAD_ACCESS("bad_variant_access: index not active")
-
-template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
-inline constexpr variant_alternative_t<I, variant<Ts...>>& get(variant<Ts...>& v)
-{
-  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_INDEX();
-}
-
-template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
-inline constexpr variant_alternative_t<I, variant<Ts...>>&& get(variant<Ts...>&& v)
-{
-  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_INDEX();
-}
-
-template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
-inline constexpr variant_alternative_t<I, variant<Ts...>> const&
-get(variant<Ts...> const& v)
-{
-  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_INDEX();
-}
-
-template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
-inline constexpr variant_alternative_t<I, variant<Ts...>> const&&
-get(variant<Ts...> const&& v)
-{
-  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_INDEX();
-}
-
-#define SVAR_BAD_TYPE() SVAR_BAD_ACCESS("bad_variant_access: type T not active")
-
-template <
-    typename T,
-    typename... Ts,
-    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr T& get(variant<Ts...>& v)
-{
-  static_assert(
-      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
-  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
-  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_TYPE();
-}
-
-template <
-    typename T,
-    typename... Ts,
-    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr T&& get(variant<Ts...>&& v)
-{
-  static_assert(
-      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
-  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
-  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_TYPE();
-}
-
-template <
-    typename T,
-    typename... Ts,
-    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr T const& get(variant<Ts...> const& v)
-{
-  static_assert(
-      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
-  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
-  return v.index() == I ? SVAR_GET_INDEX(v, I) : SVAR_BAD_TYPE();
-}
-
-template <
-    typename T,
-    typename... Ts,
-    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr T const&& get(variant<Ts...> const&& v)
-{
-  static_assert(
-      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
-  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
-  return v.index() == I ? SVAR_GET_INDEX(std::move(v), I) : SVAR_BAD_TYPE();
-}
 
 template <typename... Ts>
 class variant : public variant_ns::variant_ma_base<Ts...>
@@ -1100,9 +1014,219 @@ public:
   using base_type::valueless_by_exception;
 };
 
+template <
+    typename R = variant_ns::deduced_visit,
+    typename Visitor,
+    typename = variant_ns::require_deduced_visit<R>>
+inline constexpr decltype(auto) visit(Visitor&& visitor)
+{
+  return std::forward<Visitor>(visitor)();
+}
+
+template <
+    typename R = variant_ns::deduced_visit,
+    typename Visitor,
+    typename Variant,
+    typename... Variants,
+    typename = variant_ns::require_deduced_visit<R>>
+inline constexpr decltype(auto)
+visit(Visitor&& visitor, Variant&& variant, Variants&&... variants)
+{
+  return variant.valueless_by_exception()
+             ? SVAR_BAD_ACCESS("bad_variant_access: invalid variant in visit")
+             : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+                   variant.index(),
+                   variant_ns::visit_impl{},
+                   std::forward<Visitor>(visitor),
+                   std::forward<Variant>(variant),
+                   std::forward<Variants>(variants)...);
+}
+
+template <
+    typename R,
+    typename Visitor,
+    typename... Variants,
+    typename = mp::m_if<mp::m_not<mp::m_same<mp::m_remove_cvref<R>, void>>, void>>
+inline constexpr R visit(Visitor&& visitor, Variants&&... variants)
+{
+  return visit(std::forward<Visitor>(visitor), std::forward<Variants>(variants)...);
+}
+
+template <
+    typename R,
+    typename Visitor,
+    typename... Variants,
+    typename = mp::m_if<mp::m_same<mp::m_remove_cvref<R>, void>, void>>
+inline constexpr void visit(Visitor&& visitor, Variants&&... variants)
+{
+  visit(std::forward<Visitor>(visitor), std::forward<Variants>(variants)...);
+}
+
+template <typename T, typename... Ts>
+inline constexpr bool holds_alternative(variant<Ts...> const& variant) noexcept
+{
+  static_assert(
+      mp::m_count<simple::variant<Ts...>, T>::value == 1,
+      "type T must be unique in variant");
+  return variant.index() == mp::m_find<simple::variant<Ts...>, T>::value;
+}
+
+#define SVAR_BAD_INDEX() SVAR_BAD_ACCESS("bad_variant_access: index not active")
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>>& get(variant<Ts...>& v)
+{
+  using variant_ns::unsafe_get;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, v) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>>&& get(variant<Ts...>&& v)
+{
+  using variant_ns::unsafe_get;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, std::move(v)) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>> const&
+get(variant<Ts...> const& v)
+{
+  using variant_ns::unsafe_get;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, v) : SVAR_BAD_INDEX();
+}
+
+template <std::size_t I, typename... Ts, typename = mp::m_if_c<(I < sizeof...(Ts)), void>>
+inline constexpr variant_alternative_t<I, variant<Ts...>> const&&
+get(variant<Ts...> const&& v)
+{
+  using variant_ns::unsafe_get;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, std::move(v)) : SVAR_BAD_INDEX();
+}
+
+#define SVAR_BAD_TYPE() SVAR_BAD_ACCESS("bad_variant_access: type T not active")
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T& get(variant<Ts...>& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  using variant_ns::unsafe_get;
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, v) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T&& get(variant<Ts...>&& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  using variant_ns::unsafe_get;
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, std::move(v)) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T const& get(variant<Ts...> const& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  using variant_ns::unsafe_get;
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, v) : SVAR_BAD_TYPE();
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr T const&& get(variant<Ts...> const&& v)
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  using variant_ns::unsafe_get;
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>::value;
+  return v.index() == I ? unsafe_get(mp::m_size_t<I>{}, std::move(v)) : SVAR_BAD_TYPE();
+}
+
+template <
+    std::size_t I,
+    typename... Ts,
+    typename = mp::m_if_c<(I < (sizeof...(Ts))), void>>
+inline constexpr std::add_pointer_t<variant_alternative_t<I, variant<Ts...>>>
+get_if(variant<Ts...>* pv) noexcept
+{
+  if (pv && pv->index() == I)
+    return &variant_ns::unsafe_get(mp::m_size_t<I>{}, *pv);
+  return nullptr;
+}
+
+template <
+    std::size_t I,
+    typename... Ts,
+    typename = mp::m_if_c<(I < (sizeof...(Ts))), void>>
+inline constexpr std::add_pointer_t<variant_alternative_t<I, variant<Ts...> const>>
+get_if(variant<Ts...> const* pv) noexcept
+{
+  if (pv && pv->index() == I)
+    return &variant_ns::unsafe_get(mp::m_size_t<I>{}, *pv);
+  return nullptr;
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr std::add_pointer_t<
+    variant_alternative_t<mp::m_find<variant<Ts...>, T>::value, variant<Ts...>>>
+get_if(variant<Ts...>* pv) noexcept
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>{};
+
+  if (pv && pv->index() == I.value)
+    return &variant_ns::unsafe_get(I, *pv);
+  return nullptr;
+}
+
+template <
+    typename T,
+    typename... Ts,
+    typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
+inline constexpr std::add_pointer_t<
+    variant_alternative_t<mp::m_find<variant<Ts...>, T>::value, variant<Ts...>> const>
+get_if(variant<Ts...> const* pv) noexcept
+{
+  static_assert(
+      mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
+
+  constexpr auto I = mp::m_find<variant<Ts...>, T>{};
+
+  if (pv && pv->index() == I.value)
+    return &variant_ns::unsafe_get(I, *pv);
+  return nullptr;
+}
+
 }  // namespace simple
 
-#undef SVAR_GET_INDEX
 #undef SVAR_BAD_ACCESS
 #undef SVAR_BAD_INDEX
 #undef SVAR_BAD_TYPE
