@@ -27,6 +27,14 @@ struct S {
   std::string s1;
 };
 
+struct L1 {
+  template <typename T>
+  constexpr auto operator()(T t) const
+  {
+    return t + 50;
+  }
+};
+
 int main()
 {
 
@@ -35,6 +43,8 @@ int main()
   variant<S, S>                    var{in_place_index<1>};
   constexpr variant<int, int, int> var2{in_place_index<0>, 100};
 
+  constexpr auto value2 = visit(L1{}, var2);
+  std::cout << value2 << std::endl;
   get<1>(var).s1 = "Hello";
 
   auto value = visit(

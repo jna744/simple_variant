@@ -905,110 +905,76 @@ struct variant_friend {
 #define SVAR_GET_INDEX(variant, index)                                                   \
   ::simple::variant_ns::variant_friend::get(variant, mp::m_size_t<index>{})
 
-template <typename Function, typename Indexes, typename All, typename... Variants>
-struct build_visitor_index_list_t;
+template <typename Fn, typename Arg>
+struct bind_front_arg {
+  Fn&&  fn;
+  Arg&& arg;
+  template <typename... Args>
+  constexpr decltype(auto) operator()(Args&&... args) const
+  {
+    return std::forward<Fn>(fn)(std::forward<Arg>(arg), std::forward<Args>(args)...);
+  }
+};
 
-template <
-    typename Function,
-    typename... Is,
-    typename... AllVars,
-    typename Variant,
-    typename... Variants>
-struct build_visitor_index_list_t<
-    Function,
-    mp::m_list<Is...>,
-    mp::m_list<AllVars...>,
-    Variant,
-    Variants...> {
+template <typename Fn, typename Arg>
+constexpr bind_front_arg<Fn, Arg> bind_front(Fn&& fn, Arg&& arg)
+{
+  return {std::forward<Fn>(fn), std::forward<Arg>(arg)};
+}
 
-  template <typename I>
-  constexpr auto operator()(
+struct visit_impl {
+
+  template <
+      typename I,
+      typename Function,
+      typename Variant,
+      typename Variant2,
+      typename... Variants>
+  constexpr decltype(auto) operator()(
       I,
-      Function&&     fn,
-      Variant const& variant,
-      Variants const&... variants,
-      AllVars&&... all_vars) const
+      Function&& function,
+      Variant&&  variant,
+      Variant2&& variant2,
+      Variants&&... variants) const
   {
-    return variant.valueless_by_exception()
-               ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
-               : mp::m_invoke_with_index<mp::m_size<Variant>::value>(
-                     variant.index(),
-                     build_visitor_index_list_t<
-                         Function,
-                         mp::m_list<Is..., I>,
-                         mp::m_list<AllVars...>,
-                         Variants...>{},
-                     std::forward<Function>(fn),
-                     variants...,
-                     std::forward<AllVars>(all_vars)...);
+    auto const bound = bind_front(
+        std::forward<Function>(function),
+        SVAR_GET_INDEX(std::forward<Variant>(variant), I::value));
+    return mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+        variant2.index(),
+        visit_impl{},
+        bound,
+        std::forward<Variant2>(variant2),
+        std::forward<Variants>(variants)...);
   }
-};
-
-template <typename Function, typename IL, typename... AllVars>
-struct build_visitor_index_list_t<Function, IL, mp::m_list<AllVars...>> {
-
-  template <typename... Is, typename Fn, typename... Variants>
-  static constexpr decltype(auto) call(mp::m_list<Is...>, Fn&& fn, Variants&&... vars)
-  {
-    return std::forward<Fn>(fn)(
-        SVAR_GET_INDEX(std::forward<Variants>(vars), Is::value)...);
-  }
-
-  template <typename I>
-  constexpr auto operator()(I, Function fn, AllVars... vars) const
-  {
-    return call(
-        mp::m_push_back<IL, I>{},
-        std::forward<Function>(fn),
-        std::forward<AllVars>(vars)...);
-  }
-};
-
-struct index_visitor {
 
   template <typename I, typename Function, typename Variant>
-  constexpr decltype(auto) operator()(I, Function&& fn, Variant&& var) const
+  constexpr decltype(auto) operator()(I, Function&& function, Variant&& variant) const
   {
-    return std::forward<Function>(fn)(
-        SVAR_GET_INDEX(std::forward<Variant>(var), I::value));
+    return std::forward<Function>(function)(
+        SVAR_GET_INDEX(std::forward<Variant>(variant), I::value));
   }
 };
 
 }  // namespace variant_ns
 
-template <typename Visitor, typename Variant, typename Variant2, typename... Variants>
+template <typename Visitor>
 inline constexpr decltype(auto)
-visit(Visitor&& function, Variant&& variant, Variant2&& variant2, Variants&&... variants)
+visit(Visitor&& visitor)
 {
-  using variant_ns::build_visitor_index_list_t;
-  return variant.valueless_by_exception()
-             ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
-             : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
-                   variant.index(),
-                   build_visitor_index_list_t<
-                       Visitor&&,
-                       mp::m_list<>,
-                       mp::m_list<Variant&&, Variant2&&, Variants&&...>,
-                       mp::m_remove_cvref<Variant2>,
-                       mp::m_remove_cvref<Variants>...>{},
-                   std::forward<Visitor>(function),
-                   variant2,
-                   variants...,
-                   std::forward<Variant>(variant),
-                   std::forward<Variant2>(variant2),
-                   std::forward<Variants>(variants)...);
+  return std::forward<Visitor>(visitor);
 }
 
-template <typename Visitor, typename Variant>
-inline constexpr decltype(auto) visit(Visitor&& function, Variant&& variant)
+template <typename Visitor, typename Variant, typename... Variants>
+inline constexpr decltype(auto)
+visit(Visitor&& visitor, Variant&& variant, Variants&&... variants)
 {
-  return variant.valueless_by_exception()
-             ? SVAR_BAD_ACCESS("bad_variant_access: visit - variant is valueless")
-             : mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
-                   variant.index(),
-                   variant_ns::index_visitor{},
-                   std::forward<Visitor>(function),
-                   std::forward<Variant>(variant));
+  return mp::m_invoke_with_index<mp::m_size<mp::m_remove_cvref<Variant>>::value>(
+      variant.index(),
+      variant_ns::visit_impl{},
+      std::forward<Visitor>(visitor),
+      std::forward<Variant>(variant),
+      std::forward<Variants>(variants)...);
 }
 
 #define SVAR_BAD_INDEX() SVAR_BAD_ACCESS("bad_variant_access: index not active")
