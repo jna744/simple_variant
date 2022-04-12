@@ -167,6 +167,14 @@ template <std::size_t I>
 struct is_in_place_index<in_place_index_t<I>> : mp::m_true {
 };
 
+template <typename T>
+struct is_variant : mp::m_false {
+};
+
+template <typename... Ts>
+struct is_variant<variant<Ts...>> : mp::m_true {
+};
+
 template <bool, typename... Ts>
 union variant_storage_impl {
 };
@@ -894,6 +902,220 @@ public:
   }
 };
 
+template <typename T>
+struct conversion_array {
+  T x[1];
+};
+
+template <typename T, typename V, typename = void>
+struct variant_conversion_overload {
+  constexpr void call();
+};
+
+template <typename T, typename V>
+struct variant_conversion_overload<
+    T,
+    V,
+    mp::m_void<decltype(conversion_array<T>{mp::m_declval<V>()})>> {
+  static constexpr auto call(T) -> mp::m_identity<T>;
+};
+
+template <typename V, typename T, typename... Ts>
+struct variant_conversion_overloads : variant_conversion_overload<T, V>,
+                                      variant_conversion_overloads<V, Ts...> {
+  using variant_conversion_overload<T, V>::call;
+  using variant_conversion_overloads<V, Ts...>::call;
+};
+
+template <typename V, typename T>
+struct variant_conversion_overloads<V, T> : variant_conversion_overload<T, V> {
+  using variant_conversion_overload<T, V>::call;
+};
+
+template <typename Variant, typename Value>
+using variant_conversion_t =
+    typename decltype(mp::m_apply<
+                      variant_conversion_overloads,
+                      mp::m_push_front<Variant, Value>>::call(mp::m_declval<Value>()))::
+        type;
+
+template <typename Variant, typename Value>
+using confirm_conversion_t =
+    std::is_constructible<variant_conversion_t<Variant, Value>, Value>;
+
+template <typename Variant, typename Value, typename V = mp::m_remove_cvref<Value>>
+using is_valid_variant_conversion = mp::m_all<
+    mp::m_not<is_variant<V>>,
+    mp::m_not<mp::m_empty<Variant>>,
+    mp::m_not<is_in_place_type<V>>,
+    mp::m_not<is_in_place_index<V>>,
+    mp::m_eval_or<mp::m_false, confirm_conversion_t, Variant, Value>>;
+
+template <typename Variant, typename Value>
+using enable_if_is_valid_variant_conversion =
+    mp::m_if<is_valid_variant_conversion<Variant, Value>, void>;
+
+struct variant_friend;
+
+}  // namespace variant_ns
+
+template <typename... Ts>
+class variant : public variant_ns::variant_ma_base<Ts...>
+{
+
+  friend struct variant_ns::variant_friend;
+
+  using base_type = variant_ns::variant_ma_base<Ts...>;
+
+  using type_list = mp::m_list<Ts...>;
+
+  template <std::size_t I>
+  using type_at = variant_alternative_t<I, variant<Ts...>>;
+
+  template <typename T>
+  using index_of = mp::m_find<variant<Ts...>, T>;
+
+  template <typename T>
+  using is_unique = mp::m_bool<mp::m_count<variant<Ts...>, T>{} == 1>;
+
+public:
+
+  constexpr variant() noexcept(std::is_nothrow_default_constructible<type_at<0>>::value)
+    : base_type{mp::m_size_t<0>{}}
+  {
+  }
+
+  variant(variant const&) = default;
+
+  variant(variant&&) = default;
+
+  template <
+      typename T,
+      typename = variant_ns::enable_if_is_valid_variant_conversion<variant<Ts...>, T>,
+      typename I = index_of<variant_ns::variant_conversion_t<variant<Ts...>, T>>>
+  constexpr variant(T&& t) noexcept(std::is_nothrow_constructible<
+                                    variant_alternative_t<I::value, variant<Ts...>>,
+                                    T>::value)
+    : base_type{I{}, std::forward<T>(t)}
+  {
+  }
+
+  template <
+      typename T,
+      typename... Args,
+      typename = mp::m_if<is_unique<T>, void>,
+      typename I = index_of<T>,
+      typename = mp::m_if<std::is_constructible<type_at<I::value>, Args...>, void>>
+  constexpr explicit variant(in_place_type_t<T>, Args&&... args) noexcept(
+      std::is_nothrow_constructible<type_at<I::value>, Args...>::value)
+    : base_type{I{}, std::forward<Args>(args)...}
+  {
+  }
+
+  template <
+      typename T,
+      typename U,
+      typename... Args,
+      typename = mp::m_if<is_unique<T>, void>,
+      typename I = index_of<T>,
+      typename = mp::m_if<
+          std::is_constructible<type_at<I::value>, std::initializer_list<U>&, Args...>,
+          void>>
+  constexpr explicit variant(
+      in_place_type_t<T>,
+      std::initializer_list<U> il,
+      Args&&... args) noexcept(std::
+                                   is_nothrow_constructible<
+                                       type_at<I::value>,
+                                       std::initializer_list<U>&,
+                                       Args...>::value)
+    : base_type{I{}, il, std::forward<Args>(args)...}
+  {
+  }
+
+  template <
+      std::size_t I,
+      typename... Args,
+      typename = mp::m_if_c<
+          (sizeof...(Ts) > I) && std::is_constructible<type_at<I>, Args...>::value,
+          void>>
+  constexpr explicit variant(in_place_index_t<I>, Args&&... args) noexcept(
+      std::is_nothrow_constructible<type_at<I>, Args...>::value)
+    : base_type{mp::m_size_t<I>{}, std::forward<Args>(args)...}
+  {
+  }
+
+  template <
+      std::size_t I,
+      typename U,
+      typename... Args,
+      typename = mp::m_if_c<
+          (sizeof...(Ts) > I) &&
+              std::is_constructible<type_at<I>, std::initializer_list<U>&, Args...>::
+                  value,
+          void>>
+  constexpr explicit variant(
+      in_place_index_t<I>,
+      std::initializer_list<U> il,
+      Args&&... args) noexcept(std::
+                                   is_nothrow_constructible<
+                                       type_at<I>,
+                                       std::initializer_list<U>&,
+                                       Args...>::value)
+    : base_type{mp::m_size_t<I>{}, il, std::forward<Args>(args)...}
+  {
+  }
+
+  ~variant() = default;
+
+  variant& operator=(variant const&) = default;
+
+  variant& operator=(variant&&) = default;
+
+  template <
+      typename T,
+      typename = variant_ns::enable_if_is_valid_variant_conversion<variant<Ts...>, T>,
+      typename I = index_of<variant_ns::variant_conversion_t<variant<Ts...>, T>>>
+  constexpr variant&
+  operator=(T&& v) noexcept(std::is_nothrow_constructible<type_at<I::value>, T>::value&&
+                                std::is_nothrow_assignable<type_at<I::value>&, T>::value)
+  {
+    if (this->index() == I::value) {
+      this->get(I{}) = std::forward<T>(v);
+    } else {
+      convert_assign(
+          mp::m_any<
+              std::is_nothrow_constructible<type_at<I::value>, T>,
+              mp::m_not<std::is_nothrow_move_constructible<type_at<I::value>>>>{},
+          I{},
+          std::forward<T>(v));
+    }
+    return *this;
+  }
+
+  using base_type::index;
+
+  using base_type::valueless_by_exception;
+
+private:
+
+  template <typename I, typename V>
+  constexpr void convert_assign(mp::m_true, I, V&& v)
+  {
+    this->template emplace<I::value>(std::forward<V>(v));
+  }
+
+  template <typename I, typename V>
+  constexpr void convert_assign(mp::m_false, I, V&& v)
+  {
+    using T = type_at<I::value>;
+    this->template emplace<I::value>(T(std::forward<V>(v)));
+  }
+};
+
+namespace variant_ns
+{
+
 struct variant_friend {
   template <typename Variant, typename I>
   static constexpr decltype(auto) get(I, Variant&& variant)
@@ -968,51 +1190,6 @@ template <typename T>
 using require_deduced_visit = mp::m_if<mp::m_same<T, deduced_visit>, void>;
 
 }  // namespace variant_ns
-
-template <typename... Ts>
-class variant : public variant_ns::variant_ma_base<Ts...>
-{
-
-  friend struct variant_ns::variant_friend;
-
-  using base_type = variant_ns::variant_ma_base<Ts...>;
-
-  using type_list = mp::m_list<Ts...>;
-
-  template <std::size_t I>
-  using type_at = mp::m_at_c<type_list, I>;
-
-public:
-
-  constexpr variant() noexcept(std::is_nothrow_default_constructible<type_at<0>>::value)
-    : base_type{mp::m_size_t<0>{}}
-  {
-  }
-
-  template <
-      std::size_t I,
-      typename... Args,
-      typename = mp::m_if_c<(sizeof...(Ts) > I), void>>
-  constexpr explicit variant(in_place_index_t<I>, Args&&... args) noexcept(
-      std::is_nothrow_constructible<type_at<I>, Args...>::value)
-    : base_type{mp::m_size_t<I>{}, std::forward<Args>(args)...}
-  {
-  }
-
-  variant(variant const&) = default;
-
-  variant(variant&&) = default;
-
-  ~variant() = default;
-
-  variant& operator=(variant const&) = default;
-
-  variant& operator=(variant&&) = default;
-
-  using base_type::index;
-
-  using base_type::valueless_by_exception;
-};
 
 template <
     typename R = variant_ns::deduced_visit,
@@ -1193,9 +1370,7 @@ template <
     typename T,
     typename... Ts,
     typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr std::add_pointer_t<
-    variant_alternative_t<mp::m_find<variant<Ts...>, T>::value, variant<Ts...>>>
-get_if(variant<Ts...>* pv) noexcept
+inline constexpr std::add_pointer_t<T> get_if(variant<Ts...>* pv) noexcept
 {
   static_assert(
       mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");
@@ -1211,9 +1386,7 @@ template <
     typename T,
     typename... Ts,
     typename = mp::m_if<mp::m_contains<variant<Ts...>, T>, void>>
-inline constexpr std::add_pointer_t<
-    variant_alternative_t<mp::m_find<variant<Ts...>, T>::value, variant<Ts...>> const>
-get_if(variant<Ts...> const* pv) noexcept
+inline constexpr std::add_pointer_t<T const> get_if(variant<Ts...> const* pv) noexcept
 {
   static_assert(
       mp::m_count<variant<Ts...>, T>::value == 1, "type T must be unique in variant");

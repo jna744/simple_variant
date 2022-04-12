@@ -1,7 +1,7 @@
-#include <simple/variant.hpp>
-
 #include <functional>
 #include <iostream>
+#include <simple/mp/type_name.hpp>
+#include <simple/variant.hpp>
 #include <string>
 
 struct S {
@@ -35,29 +35,27 @@ struct L1 {
   }
 };
 
+template <typename T>
+void print()
+{
+  std::cout << simple::mp::m_type_name<T>() << std::endl;
+}
+
 int main()
 {
 
   using namespace simple;
 
-  variant<S, S>                    var{in_place_index<1>};
-  constexpr variant<int, int, int> var2{in_place_index<0>, 100};
-
-  auto* s = get_if<0>(&var);
-
-  if (!s) {
-    std::cout << "Not active!" << std::endl;
-  }
-
-  visit<void>(L1{}, var2);
-
-  get<1>(var).s1 = "Hello";
-
-  auto value = visit(
-      [](int const&& i)
-      {
-        int x = static_cast<int>(50 + i);
-        return x;
-      },
-      std::move(var2));
+  variant<std::string> v("abc");  // OK
+  // // variant<std::string, std::string> w("abc");  // ill-formed
+  variant<std::string, const char*> x("abc");                // OK, chooses const char*
+  variant<std::string, bool> y(in_place_type<bool>, false);  // OK, chooses string; bool
+                                                             // is not a candidate
+  variant<float, long, double> z = 0;                        // OK, holds long
+  //                                         // float and double are not candidates
+  //
+  //
+  std::cout << y.index() << std::endl;
+  y = "Hello";
+  std::cout << y.index() << std::endl;
 }
