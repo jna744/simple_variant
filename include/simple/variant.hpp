@@ -1501,54 +1501,23 @@ inline constexpr std::add_pointer_t<T const> get_if(variant<Ts...> const* pv) no
 namespace variant_ns
 {
 
-struct variant_eq_fn {
-  template <typename I, typename... Ts>
-  constexpr bool operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
-    return unsafe_get(I{}, lhs) == unsafe_get(I{}, rhs);
+#define SVAR_VARIANT_COMPARE_FN(name, op)                                                \
+  struct variant_##name##_fn {                                                           \
+    template <typename I, typename... Ts>                                                \
+    constexpr bool operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)   \
+    {                                                                                    \
+      return unsafe_get(I{}, lhs) op unsafe_get(I{}, rhs);                               \
+    }                                                                                    \
   }
-};
 
-struct variant_neq_fn {
-  template <typename I, typename... Ts>
-  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
+SVAR_VARIANT_COMPARE_FN(eq, ==);
+SVAR_VARIANT_COMPARE_FN(neq, !=);
+SVAR_VARIANT_COMPARE_FN(lt, <);
+SVAR_VARIANT_COMPARE_FN(lte, <=);
+SVAR_VARIANT_COMPARE_FN(gt, >);
+SVAR_VARIANT_COMPARE_FN(gte, >=);
 
-    return unsafe_get(I{}, lhs) != unsafe_get(I{}, rhs);
-  }
-};
-
-struct variant_lt_fn {
-  template <typename I, typename... Ts>
-  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
-    return unsafe_get(I{}, lhs) < unsafe_get(I{}, rhs);
-  }
-};
-
-struct variant_lte_fn {
-  template <typename I, typename... Ts>
-  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
-    return unsafe_get(I{}, lhs) <= unsafe_get(I{}, rhs);
-  }
-};
-
-struct variant_gt_fn {
-  template <typename I, typename... Ts>
-  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
-    return unsafe_get(I{}, lhs) > unsafe_get(I{}, rhs);
-  }
-};
-
-struct variant_gte_fn {
-  template <typename I, typename... Ts>
-  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
-  {
-    return unsafe_get(I{}, lhs) >= unsafe_get(I{}, rhs);
-  }
-};
+#undef SVAR_VARIANT_COMPARE_FN
 
 }  // namespace variant_ns
 
@@ -1581,17 +1550,11 @@ inline constexpr bool operator<(variant<Ts...> const& lhs, variant<Ts...> const&
     return false;
   if (lhs.valueless_by_exception())
     return true;
-
   auto const LI = lhs.index();
   auto const RI = rhs.index();
-
-  if (LI < RI)
-    return true;
-  if (LI > RI)
-    return false;
-
-  return mp::m_invoke_with_index<sizeof...(Ts)>(
-      lhs.index(), variant_ns::variant_lt_fn{}, lhs, rhs);
+  return (LI == RI) ? mp::m_invoke_with_index<sizeof...(Ts)>(
+                          LI, variant_ns::variant_lt_fn{}, lhs, rhs)
+                    : LI < RI;
 }
 
 template <typename... Ts>
@@ -1601,17 +1564,11 @@ inline constexpr bool operator>(variant<Ts...> const& lhs, variant<Ts...> const&
     return false;
   if (rhs.valueless_by_exception())
     return true;
-
   auto const LI = lhs.index();
   auto const RI = rhs.index();
-
-  if (LI > RI)
-    return true;
-  if (LI < RI)
-    return false;
-
-  return mp::m_invoke_with_index<sizeof...(Ts)>(
-      lhs.index(), variant_ns::variant_gt_fn{}, lhs, rhs);
+  return (LI == RI) ? mp::m_invoke_with_index<sizeof...(Ts)>(
+                          LI, variant_ns::variant_gt_fn{}, lhs, rhs)
+                    : LI > RI;
 }
 
 template <typename... Ts>
@@ -1621,17 +1578,11 @@ inline constexpr bool operator<=(variant<Ts...> const& lhs, variant<Ts...> const
     return true;
   if (rhs.valueless_by_exception())
     return false;
-
   auto const LI = lhs.index();
   auto const RI = rhs.index();
-
-  if (LI < RI)
-    return true;
-  if (LI > RI)
-    return false;
-
-  return mp::m_invoke_with_index<sizeof...(Ts)>(
-      lhs.index(), variant_ns::variant_lte_fn{}, lhs, rhs);
+  return (LI == RI) ? mp::m_invoke_with_index<sizeof...(Ts)>(
+                          LI, variant_ns::variant_lte_fn{}, lhs, rhs)
+                    : LI < RI;
 }
 
 template <typename... Ts>
@@ -1641,17 +1592,11 @@ inline constexpr bool operator>=(variant<Ts...> const& lhs, variant<Ts...> const
     return true;
   if (lhs.valueless_by_exception())
     return false;
-
   auto const LI = lhs.index();
   auto const RI = rhs.index();
-
-  if (LI > RI)
-    return true;
-  if (LI < RI)
-    return false;
-
-  return mp::m_invoke_with_index<sizeof...(Ts)>(
-      lhs.index(), variant_ns::variant_gte_fn{}, lhs, rhs);
+  return (LI == RI) ? mp::m_invoke_with_index<sizeof...(Ts)>(
+                          LI, variant_ns::variant_gte_fn{}, lhs, rhs)
+                    : LI > RI;
 }
 
 template <
