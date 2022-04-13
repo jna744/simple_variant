@@ -46,16 +46,12 @@ int main()
 
   using namespace simple;
 
-  variant<std::string> v("abc");  // OK
-  // // variant<std::string, std::string> w("abc");  // ill-formed
-  variant<std::string, const char*> x("abc");                // OK, chooses const char*
-  variant<std::string, bool> y(in_place_type<bool>, false);  // OK, chooses string; bool
-                                                             // is not a candidate
-  variant<float, long, double> z = 0;                        // OK, holds long
-  //                                         // float and double are not candidates
-  //
-  //
-  std::cout << y.index() << std::endl;
-  y = true;
-  std::cout << y.index() << std::endl;
+  variant<std::string, int> v = "abc";
+  variant<std::string, int> v2 = 0;
+
+  if (v == v2) {
+    std::cout << "yay!" << std::endl;
+  } else {
+    std::cout << "nay!" << std::endl;
+  }
 }

@@ -175,6 +175,34 @@ template <typename... Ts>
 struct is_variant<variant<Ts...>> : mp::m_true {
 };
 
+namespace swap_ns
+{
+
+using std::swap;
+
+template <typename T>
+using swap_detected_t = decltype(swap(mp::m_declval<T>(), mp::m_declval<T>()));
+
+template <typename T>
+using is_swappable = mp::m_is_valid<swap_detected_t, T&>;
+
+template <typename T>
+using nothrow_swap_detected_t =
+    mp::m_bool<noexcept(swap(mp::m_declval<T>(), mp::m_declval<T>()))>;
+
+template <typename T>
+using is_nothrow_swappable = mp::m_eval_or<mp::m_false, nothrow_swap_detected_t, T&>;
+
+}  // namespace swap_ns
+
+template <typename T>
+struct is_swappable : swap_ns::is_swappable<T> {
+};
+
+template <typename T>
+struct is_nothrow_swappable : swap_ns::is_nothrow_swappable<T> {
+};
+
 template <bool, typename... Ts>
 union variant_storage_impl {
 };
@@ -907,7 +935,7 @@ public:
 };
 
 template <typename T>
-struct conversion_array {
+struct anti_narrow_type {
   T x[1];
 };
 
@@ -920,7 +948,7 @@ template <typename T, typename V>
 struct variant_conversion_overload<
     T,
     V,
-    mp::m_void<decltype(conversion_array<T>{mp::m_declval<V>()})>> {
+    mp::m_void<decltype(anti_narrow_type<T>{mp::m_declval<V>()})>> {
   static constexpr auto call(T) -> mp::m_identity<T>;
 };
 
@@ -1143,6 +1171,23 @@ public:
     return base_type::template emplace<I>(il, std::forward<Args>(args)...);
   }
 
+  constexpr void
+  swap(variant& other) noexcept(mp::m_all<
+                                std::is_nothrow_move_constructible<Ts>...,
+                                variant_ns::is_nothrow_swappable<Ts>...>::value)
+  {
+    auto const I = index();
+    if (I == other.index()) {
+      if (valueless_by_exception())
+        return;
+      mp::m_invoke_with_index<sizeof...(Ts)>(I, swap_fn{}, *this, other);
+    } else {
+      variant tmp{std::move(*this)};
+      *this = std::move(other);
+      other = std::move(tmp);
+    }
+  }
+
 private:
 
   template <typename I, typename V>
@@ -1157,6 +1202,15 @@ private:
     using T = type_at<I::value>;
     base_type::template emplace<I::value>(T(std::forward<V>(v)));
   }
+
+  struct swap_fn {
+    template <typename I>
+    constexpr void operator()(I, variant& this_, variant& other)
+    {
+      using std::swap;
+      swap(this_.get(I{}), other.get(I{}));
+    }
+  };
 };
 
 namespace variant_ns
@@ -1188,7 +1242,7 @@ struct bind_front_arg {
 };
 
 template <typename Fn, typename Arg>
-constexpr bind_front_arg<Fn, Arg> bind_front(Fn&& fn, Arg&& arg)
+inline constexpr bind_front_arg<Fn, Arg> bind_front(Fn&& fn, Arg&& arg)
 {
   return {std::forward<Fn>(fn), std::forward<Arg>(arg)};
 }
@@ -1442,6 +1496,173 @@ inline constexpr std::add_pointer_t<T const> get_if(variant<Ts...> const* pv) no
   if (pv && pv->index() == I.value)
     return &variant_ns::unsafe_get(I, *pv);
   return nullptr;
+}
+
+namespace variant_ns
+{
+
+struct variant_eq_fn {
+  template <typename I, typename... Ts>
+  constexpr bool operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+    return unsafe_get(I{}, lhs) == unsafe_get(I{}, rhs);
+  }
+};
+
+struct variant_neq_fn {
+  template <typename I, typename... Ts>
+  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+
+    return unsafe_get(I{}, lhs) != unsafe_get(I{}, rhs);
+  }
+};
+
+struct variant_lt_fn {
+  template <typename I, typename... Ts>
+  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+    return unsafe_get(I{}, lhs) < unsafe_get(I{}, rhs);
+  }
+};
+
+struct variant_lte_fn {
+  template <typename I, typename... Ts>
+  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+    return unsafe_get(I{}, lhs) <= unsafe_get(I{}, rhs);
+  }
+};
+
+struct variant_gt_fn {
+  template <typename I, typename... Ts>
+  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+    return unsafe_get(I{}, lhs) > unsafe_get(I{}, rhs);
+  }
+};
+
+struct variant_gte_fn {
+  template <typename I, typename... Ts>
+  constexpr void operator()(I, variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+  {
+    return unsafe_get(I{}, lhs) >= unsafe_get(I{}, rhs);
+  }
+};
+
+}  // namespace variant_ns
+
+template <typename... Ts>
+inline constexpr bool operator==(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (lhs.index() != rhs.index())
+    return false;
+  return lhs.valueless_by_exception()
+             ? true
+             : mp::m_invoke_with_index<sizeof...(Ts)>(
+                   lhs.index(), variant_ns::variant_eq_fn{}, lhs, rhs);
+}
+
+template <typename... Ts>
+inline constexpr bool operator!=(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (lhs.index() != rhs.index())
+    return true;
+  return lhs.valueless_by_exception()
+             ? false
+             : mp::m_invoke_with_index<sizeof...(Ts)>(
+                   lhs.index(), variant_ns::variant_neq_fn{}, lhs, rhs);
+}
+
+template <typename... Ts>
+inline constexpr bool operator<(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (rhs.valueless_by_exception())
+    return false;
+  if (lhs.valueless_by_exception())
+    return true;
+
+  auto const LI = lhs.index();
+  auto const RI = rhs.index();
+
+  if (LI < RI)
+    return true;
+  if (LI > RI)
+    return false;
+
+  return mp::m_invoke_with_index<sizeof...(Ts)>(
+      lhs.index(), variant_ns::variant_lt_fn{}, lhs, rhs);
+}
+
+template <typename... Ts>
+inline constexpr bool operator>(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (lhs.valueless_by_exception())
+    return false;
+  if (rhs.valueless_by_exception())
+    return true;
+
+  auto const LI = lhs.index();
+  auto const RI = rhs.index();
+
+  if (LI > RI)
+    return true;
+  if (LI < RI)
+    return false;
+
+  return mp::m_invoke_with_index<sizeof...(Ts)>(
+      lhs.index(), variant_ns::variant_gt_fn{}, lhs, rhs);
+}
+
+template <typename... Ts>
+inline constexpr bool operator<=(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (lhs.valueless_by_exception())
+    return true;
+  if (rhs.valueless_by_exception())
+    return false;
+
+  auto const LI = lhs.index();
+  auto const RI = rhs.index();
+
+  if (LI < RI)
+    return true;
+  if (LI > RI)
+    return false;
+
+  return mp::m_invoke_with_index<sizeof...(Ts)>(
+      lhs.index(), variant_ns::variant_lte_fn{}, lhs, rhs);
+}
+
+template <typename... Ts>
+inline constexpr bool operator>=(variant<Ts...> const& lhs, variant<Ts...> const& rhs)
+{
+  if (rhs.valueless_by_exception())
+    return true;
+  if (lhs.valueless_by_exception())
+    return false;
+
+  auto const LI = lhs.index();
+  auto const RI = rhs.index();
+
+  if (LI > RI)
+    return true;
+  if (LI < RI)
+    return false;
+
+  return mp::m_invoke_with_index<sizeof...(Ts)>(
+      lhs.index(), variant_ns::variant_gte_fn{}, lhs, rhs);
+}
+
+template <
+    typename... Ts,
+    typename = mp::m_if<
+        mp::m_all<std::is_move_constructible<Ts>..., variant_ns::is_swappable<Ts>...>,
+        void>>
+inline constexpr void
+swap(variant<Ts...>& lhs, variant<Ts...>& rhs) noexcept(noexcept(lhs.swap(rhs)))
+{
+  lhs.swap(rhs);
 }
 
 }  // namespace simple
