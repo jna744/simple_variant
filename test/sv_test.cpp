@@ -49,6 +49,10 @@ int main()
   variant<std::string, int> v = "abc";
   variant<std::string, int> v2 = 0;
 
+  auto value = std::hash<decltype(v)>{}(v);
+
+  std::cout << "Hash value = " << value << std::endl;
+
   if (v == v2) {
     std::cout << "yay!" << std::endl;
   } else {

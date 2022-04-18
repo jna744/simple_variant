@@ -1612,6 +1612,78 @@ swap(variant<Ts...>& lhs, variant<Ts...>& rhs) noexcept(noexcept(lhs.swap(rhs)))
 
 }  // namespace simple
 
+namespace std
+{
+
+template <typename T>
+struct hash;
+
+}
+
+namespace simple
+{
+
+namespace variant_ns
+{
+
+template <typename T>
+using hash_detected_t = decltype(
+    std::hash<std::remove_const_t<T>>{}(mp::m_declval<mp::m_remove_cvref<T> const&>()));
+
+template <typename T>
+using is_hashable = mp::m_is_valid<hash_detected_t, T>;
+
+template <typename, typename...>
+struct hash_impl;
+
+struct hash_fn {
+  template <typename I, typename Variant>
+  constexpr std::size_t operator()(I, Variant const& variant) const
+  {
+    using T = std::remove_const_t<variant_alternative_t<I::value, Variant>>;
+    return std::hash<T>{}(unsafe_get(I{}, variant));
+  }
+};
+
+template <typename... Ts>
+struct hash_impl<mp::m_true, Ts...> {
+  constexpr std::size_t operator()(variant<Ts...> const& value) const
+  {
+    using SizeT = decltype(value.index());
+    auto const i_hash = std::hash<SizeT>{}(value.index());
+    if (value.valueless_by_exception())
+      return i_hash;
+    return i_hash +
+           mp::m_invoke_with_index<sizeof...(Ts)>(value.index(), hash_fn{}, value);
+  }
+};
+
+template <typename... Ts>
+struct hash_impl<mp::m_false, Ts...> {
+  hash_impl() = delete;
+  hash_impl(hash_impl const&) = delete;
+  hash_impl& operator=(hash_impl const&) = delete;
+};
+
+}  // namespace variant_ns
+
+}  // namespace simple
+
+template <typename... Ts>
+struct std::hash<simple::variant<Ts...>>
+  : simple::variant_ns::
+        hash_impl<simple::mp::m_all<simple::variant_ns::is_hashable<Ts>...>, Ts...> {
+};
+
+template <>
+struct std::hash<simple::monostate> {
+  constexpr std::size_t operator()(simple::monostate) const
+  {
+    constexpr std::size_t monostate_magic_hash = -7777;
+    return monostate_magic_hash;
+  }
+};
+
 #undef SVAR_BAD_ACCESS
 #undef SVAR_BAD_INDEX
 #undef SVAR_BAD_TYPE
